@@ -127,7 +127,7 @@ def format_line_message(stocks):
 # ====== メイン ======
 def main():
     stocks = fetch_portfolio()
-
+    print("取得銘柄数:", len(stocks))   # ← 追加
     for s in stocks:
         s["ma_dev"] = get_ma_deviation(s["code"])
         s["combo_score"] = get_combo_score(s["code"])
