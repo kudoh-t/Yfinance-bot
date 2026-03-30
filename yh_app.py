@@ -104,7 +104,7 @@ def send_to_line(message):
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Content-Type": "application/json",
-        "Authorization": f"Bearer {LINE_TOKEN}",
+        "Authorization": f"Bearer {LINE_ACCESS_TOKEN}",
     }
     data = {
         "to": LINE_USER_ID,
