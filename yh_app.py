@@ -7,7 +7,7 @@ import os
 COOKIE = os.getenv("YAHOO_COOKIE")
 
 # ====== 2. LINE Token ======
-LINE_ACCES_TOKEN = os.getenv("LINE_TOKEN")
+LINE_ACCES_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
 LINE_USER_ID = os.getenv("LINE_USER_ID")
 
 # ====== 3. Yahooポートフォリオ取得 ======
