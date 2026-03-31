@@ -1,53 +1,25 @@
 import requests
-from bs4 import BeautifulSoup
-import re
+import csv
+import io
 import os
 
-# ====== 1. Yahoo Cookie ======
-COOKIE = os.getenv("YAHOO_COOKIE")
-
-# ====== 2. LINE Token ======
-LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
-LINE_USER_ID = os.getenv("LINE_USER_ID")
-
-# ====== 3. Yahooポートフォリオ取得 ======
-def fetch_portfolio():
-    url = "https://finance.yahoo.co.jp/portfolio/detail?portfolioId=2"
-    headers = {
-        "User-Agent": "Mozilla/5.0",
-        "Cookie": COOKIE,
-    }
-    r = requests.get(url, headers=headers)
+# ====== 1. Yahooポートフォリオ CSV取得 ======
+def fetch_portfolio_csv(portfolio_id=2):
+    url = f"https://finance.yahoo.co.jp/portfolio/download?portfolioId={portfolio_id}"
+    r = requests.get(url)
     r.raise_for_status()
-    soup = BeautifulSoup(r.text, "html.parser")
 
-    rows = soup.select("table tbody tr")
+    csv_text = r.text
+    f = io.StringIO(csv_text)
+    reader = csv.DictReader(f)
+
     stocks = []
-
-    for row in rows:
-        tds = row.find_all("td")
-        if len(tds) < 6:
-            continue
-
-        code_block = tds[0].get_text(" ", strip=True)
-        m = re.search(r"(\d{4})\s+(\S+)\s+(.+)", code_block)
-        if not m:
-            continue
-
-        code, market, name = m.groups()
-
-        if "指数" in market or "先物" in market:
-            continue
-
-        price_text = tds[1].get_text(strip=True)
-        shares_text = tds[4].get_text(strip=True)
-
-        if not shares_text or shares_text == "---":
-            continue
-
+    for row in reader:
         try:
-            price = float(price_text.replace(",", ""))
-            shares = int(shares_text.replace(",", ""))
+            code = row["コード"]
+            name = row["銘柄名"]
+            price = float(row["現在値"].replace(",", ""))
+            shares = int(row["保有数"].replace(",", ""))
         except:
             continue
 
@@ -57,32 +29,33 @@ def fetch_portfolio():
         stocks.append({
             "code": code,
             "name": name,
-            "market": market,
             "price": price,
             "shares": shares,
         })
 
     return stocks
 
-# ====== 4. あなたの計算ロジック ======
 
+# ====== 2. LINE Token ======
+LINE_ACCESS_TOKEN = os.getenv("LINE_ACCESS_TOKEN")
+LINE_USER_ID = os.getenv("LINE_USER_ID")
+
+
+# ====== 3. あなたの計算ロジック ======
 def get_ma_deviation(code):
-    # ★あなたのロジックに置き換え
     return -0.03
 
 def get_combo_score(code):
-    # ★あなたのロジックに置き換え
     return 70
 
 def get_beta(code):
-    # ★あなたのロジックに置き換え
     return 1.2
 
 def get_risk_contrib(code):
-    # ★あなたのロジックに置き換え
     return 0.05
 
-# ====== 反転確率 ======
+
+# ====== 4. 反転確率 ======
 def calc_reversal_prob(ma_dev, combo_score, beta):
     ma_norm = max(0.0, 1 - min(abs(ma_dev), 0.12) / 0.12)
     score_norm = max(0.0, min((combo_score - 40) / 40, 1.0))
@@ -90,7 +63,8 @@ def calc_reversal_prob(ma_dev, combo_score, beta):
     p = 0.40 * ma_norm + 0.30 * score_norm + 0.20 * 1.0 + 0.10 * beta_norm
     return p * 100
 
-# ====== 買い増し額 ======
+
+# ====== 5. 買い増し額 ======
 def allocate_buy_amount(stocks, total_capital):
     for s in stocks:
         s["weight"] = s["rev_prob"] * s["risk_contrib"]
@@ -99,7 +73,8 @@ def allocate_buy_amount(stocks, total_capital):
         s["buy_amount"] = 0 if total_w == 0 else total_capital * s["weight"] / total_w
     return stocks
 
-# ====== LINE通知 ======
+
+# ====== 6. LINE通知 ======
 def send_to_line(message):
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
@@ -112,8 +87,12 @@ def send_to_line(message):
     }
     requests.post(url, headers=headers, json=data)
 
-# ====== メッセージ整形 ======
+
+# ====== 7. メッセージ整形 ======
 def format_line_message(stocks):
+    if not stocks:
+        return "【今日の反転候補TOP5】\nデータが取得できませんでした。"
+
     lines = ["【今日の反転候補TOP5】"]
     top5 = sorted(stocks, key=lambda x: x["rev_prob"], reverse=True)[:5]
     for s in top5:
@@ -124,10 +103,12 @@ def format_line_message(stocks):
         )
     return "\n".join(lines)
 
-# ====== メイン ======
+
+# ====== 8. メイン ======
 def main():
-    stocks = fetch_portfolio()
-    print("取得銘柄数:", len(stocks))   # ← 追加
+    stocks = fetch_portfolio_csv()
+    print("取得銘柄数:", len(stocks))
+
     for s in stocks:
         s["ma_dev"] = get_ma_deviation(s["code"])
         s["combo_score"] = get_combo_score(s["code"])
@@ -141,6 +122,7 @@ def main():
 
     msg = format_line_message(stocks)
     send_to_line(msg)
+
 
 if __name__ == "__main__":
     main()
