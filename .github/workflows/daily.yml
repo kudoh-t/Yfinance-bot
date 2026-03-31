@@ -2,7 +2,7 @@ name: Daily Yfinance Bot
 
 on:
   schedule:
-    - cron: "0 22 * * *"
+    - cron: "40 2 * * *"   # JST 11:40
   workflow_dispatch:
 
 jobs:
@@ -27,7 +27,6 @@ jobs:
         env:
           LINE_ACCESS_TOKEN: ${{ secrets.LINE_ACCESS_TOKEN }}
           LINE_USER_ID: ${{ secrets.LINE_USER_ID }}
-          YAHOO_COOKIE: ${{ secrets.YAHOO_COOKIE }}
         run: |
           python yh_app.py
 
