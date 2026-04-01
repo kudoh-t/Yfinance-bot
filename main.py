@@ -51,7 +51,7 @@ def av_daily(symbol: str, outputsize="compact") -> pd.Series | None:
         f"&outputsize={outputsize}&apikey={ALPHA_KEY}"
     )
     r = requests.get(url)
-    time.sleep(12)  # ★ API 制限回避
+    time.sleep(12)
 
     data = r.json()
     ts = data.get("Time Series (Daily)", {})
@@ -62,8 +62,7 @@ def av_daily(symbol: str, outputsize="compact") -> pd.Series | None:
     for d, v in ts.items():
         records.append((pd.to_datetime(d), float(v["4. close"])))
 
-    s = pd.Series(dict(records)).sort_index()
-    return s
+    return pd.Series(dict(records)).sort_index()
 
 
 def av_dividend_rate(symbol: str) -> float:
@@ -72,7 +71,7 @@ def av_dividend_rate(symbol: str) -> float:
         f"?function=OVERVIEW&symbol={symbol}&apikey={ALPHA_KEY}"
     )
     r = requests.get(url)
-    time.sleep(12)  # ★ API 制限回避
+    time.sleep(12)
 
     data = r.json()
     try:
@@ -87,7 +86,6 @@ def build_df_latest() -> pd.DataFrame:
     end_date = date.today()
     start_date = end_date - timedelta(days=365 * 2)
 
-    # ベンチマーク
     bench_series = av_daily(BENCHMARK_TICKER, outputsize="full")
     if bench_series is None:
         return pd.DataFrame()
@@ -146,8 +144,9 @@ def build_df_latest() -> pd.DataFrame:
 
         score_fund = max(0, min(100, round(yield_val * 1000 + momentum * 200 + 50)))
 
-        risk_char = 'ハイリスク' if beta > 1.2 else 'ディフェンシブ' if beta < 0.8 else '市場連動型'
-        sig = ('High-Beta Momentum Buy' if momentum > 0 else 'High-Risk Sell') if beta > 1.2 else ('Standard Buy' if momentum > 0 else 'Standard Sell')
+        # ====== 新 Buy ロジック ======
+        is_buy = (momentum > -0.005) or (score_integ > 50)
+        sig = "Buy" if is_buy else "Sell"
 
         results.append({
             'name': name,
@@ -161,7 +160,6 @@ def build_df_latest() -> pd.DataFrame:
             'div_amount': div_amount,
             'yield': yield_val,
             'score_fund': score_fund,
-            'risk_char': risk_char,
             'signal': sig,
         })
 
@@ -174,7 +172,7 @@ def pick_top7(df_latest: pd.DataFrame) -> pd.DataFrame:
     if df_latest.empty or "signal" not in df_latest.columns:
         return pd.DataFrame()
 
-    buy_df = df_latest[df_latest["signal"].str.contains("Buy")]
+    buy_df = df_latest[df_latest["signal"] == "Buy"]
     return buy_df.sort_values("score_integ", ascending=False).head(7)
 
 
