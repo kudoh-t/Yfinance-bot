@@ -42,7 +42,7 @@ sector_mapping = {
     'トリケミカル': '化学', '(株)パワーエックス': '製造業'
 }
 
-# ====== Alpha Vantage ラッパ（12秒スロットリング） ======
+# ====== Alpha Vantage ラッパ（6秒スロットリング） ======
 
 def av_daily(symbol: str, outputsize="compact") -> pd.Series | None:
     url = (
@@ -71,7 +71,7 @@ def av_dividend_rate(symbol: str) -> float:
         f"?function=OVERVIEW&symbol={symbol}&apikey={ALPHA_KEY}"
     )
     r = requests.get(url)
-    time.sleep(12)
+    time.sleep(6)
 
     data = r.json()
     try:
@@ -84,9 +84,9 @@ def av_dividend_rate(symbol: str) -> float:
 
 def build_df_latest() -> pd.DataFrame:
     end_date = date.today()
-    start_date = end_date - timedelta(days=365 * 2)
+    start_date = end_date - timedelta(days=120)  # compact に合わせて120日だけ使う
 
-    bench_series = av_daily(BENCHMARK_TICKER, outputsize="full")
+    bench_series = av_daily(BENCHMARK_TICKER, outputsize="compact")
     if bench_series is None:
         return pd.DataFrame()
 
@@ -105,7 +105,7 @@ def build_df_latest() -> pd.DataFrame:
     for name, qty in holdings.items():
         symbol = full_ticker_mapping[name]
 
-        prices = av_daily(symbol, outputsize="full")
+        prices = av_daily(symbol, outputsize="compact")
         if prices is None:
             continue
 
@@ -126,7 +126,7 @@ def build_df_latest() -> pd.DataFrame:
         stock_returns = prices.pct_change().dropna()
         common_index = stock_returns.index.intersection(bench_returns.index)
 
-        if len(common_index) < 50 or benchmark_var == 0:
+        if len(common_index) < 20 or benchmark_var == 0:
             beta = 1.0
         else:
             beta = stock_returns.reindex(common_index).cov(bench_returns.reindex(common_index)) / benchmark_var
@@ -144,8 +144,8 @@ def build_df_latest() -> pd.DataFrame:
 
         score_fund = max(0, min(100, round(yield_val * 1000 + momentum * 200 + 50)))
 
-        # ====== 新 Buy ロジック ======
-        is_buy = (momentum > -0.005) or (score_integ > 50)
+        # ====== Buy ロジック（45に緩和） ======
+        is_buy = (momentum > -0.005) or (score_integ > 45)
         sig = "Buy" if is_buy else "Sell"
 
         results.append({
@@ -211,3 +211,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+
