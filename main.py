@@ -51,7 +51,7 @@ def av_daily(symbol: str, outputsize="compact") -> pd.Series | None:
         f"&outputsize={outputsize}&apikey={ALPHA_KEY}"
     )
     r = requests.get(url)
-    time.sleep(12)
+    time.sleep(6)
 
     data = r.json()
     ts = data.get("Time Series (Daily)", {})
