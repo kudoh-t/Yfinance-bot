@@ -1,11 +1,12 @@
 import os
+import time
 import requests
 import pandas as pd
 import numpy as np
 from datetime import date, timedelta
 
 # ====== 設定 ======
-BENCHMARK_TICKER = "1306.T"  # TOPIX ETF
+BENCHMARK_TICKER = "1306.T"
 ALPHA_KEY = os.getenv("ALPHA_KEY")
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 LINE_USER_ID = os.getenv("LINE_USER_ID")
@@ -41,19 +42,21 @@ sector_mapping = {
     'トリケミカル': '化学', '(株)パワーエックス': '製造業'
 }
 
-# ====== Alpha Vantage ラッパ ======
+# ====== Alpha Vantage ラッパ（12秒スロットリング） ======
 
-def av_daily(symbol: str, outputsize="compact") -> pd.Series:
+def av_daily(symbol: str, outputsize="compact") -> pd.Series | None:
     url = (
         "https://www.alphavantage.co/query"
         f"?function=TIME_SERIES_DAILY_ADJUSTED&symbol={symbol}"
         f"&outputsize={outputsize}&apikey={ALPHA_KEY}"
     )
     r = requests.get(url)
+    time.sleep(12)  # ★ API 制限回避
+
     data = r.json()
     ts = data.get("Time Series (Daily)", {})
     if not ts:
-        return pd.Series(dtype=float)
+        return None
 
     records = []
     for d, v in ts.items():
@@ -69,6 +72,8 @@ def av_dividend_rate(symbol: str) -> float:
         f"?function=OVERVIEW&symbol={symbol}&apikey={ALPHA_KEY}"
     )
     r = requests.get(url)
+    time.sleep(12)  # ★ API 制限回避
+
     data = r.json()
     try:
         return float(data.get("DividendPerShare", "0") or 0)
@@ -84,6 +89,9 @@ def build_df_latest() -> pd.DataFrame:
 
     # ベンチマーク
     bench_series = av_daily(BENCHMARK_TICKER, outputsize="full")
+    if bench_series is None:
+        return pd.DataFrame()
+
     bench_series.index = pd.to_datetime(bench_series.index, errors="coerce")
     bench_series = bench_series.dropna()
     bench_series = bench_series[
@@ -100,6 +108,9 @@ def build_df_latest() -> pd.DataFrame:
         symbol = full_ticker_mapping[name]
 
         prices = av_daily(symbol, outputsize="full")
+        if prices is None:
+            continue
+
         prices.index = pd.to_datetime(prices.index, errors="coerce")
         prices = prices.dropna()
         prices = prices[
@@ -160,6 +171,9 @@ def build_df_latest() -> pd.DataFrame:
 # ====== Top7 抽出 & LINE 通知 ======
 
 def pick_top7(df_latest: pd.DataFrame) -> pd.DataFrame:
+    if df_latest.empty or "signal" not in df_latest.columns:
+        return pd.DataFrame()
+
     buy_df = df_latest[df_latest["signal"].str.contains("Buy")]
     return buy_df.sort_values("score_integ", ascending=False).head(7)
 
@@ -188,6 +202,11 @@ def notify_line(top7: pd.DataFrame):
 
 def main():
     df_latest = build_df_latest()
+
+    if df_latest.empty:
+        notify_line(pd.DataFrame())
+        return
+
     top7 = pick_top7(df_latest)
     notify_line(top7)
 
