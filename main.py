@@ -1,9 +1,7 @@
 import os
-import time
 import requests
 import pandas as pd
 from bs4 import BeautifulSoup
-from datetime import date, timedelta
 
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 LINE_USER_ID = os.getenv("LINE_USER_ID")
@@ -27,34 +25,28 @@ ticker_map = {
     '三菱HCキャピタル': '8593', 'クオリプス': '4894'
 }
 
-# ====== 株探から株価を取得 ======
-def get_price_kabutan(code):
-    url = f"https://kabutan.jp/stock/?code={code}"
+# ====== みんかぶ：株価取得 ======
+def get_price_minkabu(code):
+    url = f"https://minkabu.jp/stock/{code}"
     r = requests.get(url)
     soup = BeautifulSoup(r.text, "html.parser")
 
-    # パターン1
-    tag = soup.select_one(".kabuka")
-    if tag:
-        return float(tag.text.replace(",", ""))
-
-    # パターン2
-    tag = soup.select_one("#stockinfo_i1 dd")
+    tag = soup.select_one(".md_stockBoard_stockPrice")
     if tag:
         return float(tag.text.replace(",", ""))
 
     return None
 
-# ====== 株探から過去株価を取得（チャートページ） ======
-def get_history_kabutan(code):
-    url = f"https://kabutan.jp/stock/kabuka?code={code}&ashi=day"
+# ====== みんかぶ：過去株価取得 ======
+def get_history_minkabu(code):
+    url = f"https://minkabu.jp/stock/{code}/daily"
     r = requests.get(url)
     soup = BeautifulSoup(r.text, "html.parser")
 
-    rows = soup.select("table.stock_kabuka0 tr")
+    rows = soup.select("table.stocksTable tbody tr")
     prices = []
 
-    for row in rows[1:]:
+    for row in rows:
         cols = row.select("td")
         if len(cols) >= 5:
             try:
@@ -63,7 +55,7 @@ def get_history_kabutan(code):
             except:
                 pass
 
-    return pd.Series(prices[::-1])  # 古い→新しい順に並べ替え
+    return pd.Series(prices[::-1])  # 古い→新しい順
 
 # ====== LINE通知 ======
 def notify_line(message):
@@ -82,7 +74,7 @@ def build_df_latest():
     for name, qty in holdings.items():
         code = ticker_map[name]
 
-        prices = get_history_kabutan(code)
+        prices = get_history_minkabu(code)
         if prices is None or len(prices) < 30:
             continue
 
@@ -93,7 +85,7 @@ def build_df_latest():
         current_price = prices.iloc[-1]
         eval_val = qty * current_price
 
-        beta = 1.0  # 株探では取得不可 → 仮値
+        beta = 1.0  # みんかぶでは取得不可 → 仮値
 
         score_integ = 50 + (momentum * 100 * beta)
         if beta < 0.8:
@@ -140,5 +132,3 @@ def main():
 
 if __name__ == "__main__":
     main()
-
-
