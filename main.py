@@ -11,28 +11,24 @@ def notify_line(message: str):
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_TOKEN}",
     }
-    data = {"to": LINE_USER_ID, "messages": [{"type": "text", "text": message}]}
+    data = {"to": LINE_USER_ID, "messages": [{"type": "text", "text": message[:4900]}]}
     requests.post(url, headers=headers, json=data)
 
-def get_price_rakuten(ticker):
-    url = f"https://www.rakuten-sec.co.jp/web/market/search/{ticker}.html"
+def main():
+    url = "https://www.rakuten-sec.co.jp/web/market/search/7011.html"
     r = requests.get(url)
     soup = BeautifulSoup(r.text, "html.parser")
 
-    tag1 = soup.select_one(".md-stockBoard_price")  # 旧UI
-    tag2 = soup.select_one(".stockPrice")           # 新UI
+    # 株価が含まれそうな部分を抽出（div, span, strong など）
+    candidates = soup.find_all(["div", "span", "strong"], limit=50)
 
-    result = (
-        f"【楽天証券テスト】\n"
-        f"銘柄: {ticker}\n"
-        f"tag1: {tag1.text.strip() if tag1 else 'None'}\n"
-        f"tag2: {tag2.text.strip() if tag2 else 'None'}"
-    )
+    text_dump = "【HTMLテスト】\n"
+    for c in candidates:
+        t = c.get_text(strip=True)
+        if t:
+            text_dump += t + "\n"
 
-    notify_line(result)
-
-def main():
-    get_price_rakuten("7011")  # 三菱重工
+    notify_line(text_dump)
 
 if __name__ == "__main__":
     main()
