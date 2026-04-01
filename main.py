@@ -6,6 +6,15 @@ from bs4 import BeautifulSoup
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 LINE_USER_ID = os.getenv("LINE_USER_ID")
 
+# ====== User-Agent（みんかぶ対策：必須） ======
+headers = {
+    "User-Agent": (
+        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
+        "AppleWebKit/537.36 (KHTML, like Gecko) "
+        "Chrome/123.0 Safari/537.36"
+    )
+}
+
 # ====== Holdings ======
 holdings = {
     '三菱重工': 2000, 'ビジネスエンジ': 18000, '三井住友FG': 1500, '三菱UFJ': 800,
@@ -28,7 +37,7 @@ ticker_map = {
 # ====== みんかぶ：株価取得 ======
 def get_price_minkabu(code):
     url = f"https://minkabu.jp/stock/{code}"
-    r = requests.get(url)
+    r = requests.get(url, headers=headers)
     soup = BeautifulSoup(r.text, "html.parser")
 
     tag = soup.select_one(".md_stockBoard_stockPrice")
@@ -40,7 +49,7 @@ def get_price_minkabu(code):
 # ====== みんかぶ：過去株価取得 ======
 def get_history_minkabu(code):
     url = f"https://minkabu.jp/stock/{code}/daily"
-    r = requests.get(url)
+    r = requests.get(url, headers=headers)
     soup = BeautifulSoup(r.text, "html.parser")
 
     rows = soup.select("table.stocksTable tbody tr")
@@ -60,12 +69,12 @@ def get_history_minkabu(code):
 # ====== LINE通知 ======
 def notify_line(message):
     url = "https://api.line.me/v2/bot/message/push"
-    headers = {
+    headers_line = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_TOKEN}",
     }
     data = {"to": LINE_USER_ID, "messages": [{"type": "text", "text": message}]}
-    requests.post(url, headers=headers, json=data)
+    requests.post(url, headers=headers_line, json=data)
 
 # ====== 分析 ======
 def build_df_latest():
@@ -83,7 +92,6 @@ def build_df_latest():
         momentum = (ma5 - ma25) / ma25 if ma25 != 0 else 0
 
         current_price = prices.iloc[-1]
-        eval_val = qty * current_price
 
         beta = 1.0  # みんかぶでは取得不可 → 仮値
 
@@ -96,7 +104,6 @@ def build_df_latest():
 
         results.append({
             "name": name,
-            "qty": qty,
             "price": current_price,
             "momentum": momentum,
             "score_integ": score_integ,
