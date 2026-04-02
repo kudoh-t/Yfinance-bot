@@ -1,144 +1,76 @@
 import os
 import requests
 import pandas as pd
-from bs4 import BeautifulSoup
+import io
 
+# ==========================================
+# 1. 設定情報（ここを書き換えてください）
+# ==========================================
+
+# 先ほどコピーしたGoogleスプレッドシートの長いURLを貼り付けてください
+CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTnmbJ3DubdIL0DmokPDIn0u9uDUZBUL7UVPOQ48Mu8qFRLaUBqekdg6BTZbzmFcURPXKY3qlpDsev4/pubhtml"
+
+# LINEのトークンとユーザーID
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 LINE_USER_ID = os.getenv("LINE_USER_ID")
 
-# ====== User-Agent（みんかぶ対策：必須） ======
-headers = {
-    "User-Agent": (
-        "Mozilla/5.0 (Windows NT 10.0; Win64; x64) "
-        "AppleWebKit/537.36 (KHTML, like Gecko) "
-        "Chrome/123.0.0.0 Safari/537.36 Edg/123.0.0.0"
-    ),
-    "Accept-Language": "ja,en-US;q=0.9,en;q=0.8",
-    "Accept": "text/html,application/xhtml+xml,application/xml;q=0.9,*/*;q=0.8",
-    "Connection": "keep-alive",
-}
-
-# ====== Holdings ======
-holdings = {
-    '三菱重工': 2000, 'ビジネスエンジ': 18000, '三井住友FG': 1500, '三菱UFJ': 800,
-    '千葉銀行': 200, '信越化学': 500, '村田製作所': 400, 'INPEX': 100,
-    '三井海洋': 100, '日揮': 100, 'オリックス': 100, 'ヒューリック': 100,
-    '伊藤忠': 100, '三菱商事': 300, 'NTT': 100,
-    'KDDI': 100, '住友電工': 200, 'イオン': 300, '三菱ガス化学': 200,
-    '三菱HCキャピタル': 200, 'クオリプス': 300
-}
-
-ticker_map = {
-    '三菱重工': '7011', 'ビジネスエンジ': '4828', '三井住友FG': '8316', '三菱UFJ': '8306',
-    '千葉銀行': '8331', '信越化学': '4063', '村田製作所': '6981', 'INPEX': '1605',
-    '三井海洋': '6269', '日揮': '1963', 'オリックス': '8591', 'ヒューリック': '3003',
-    '伊藤忠': '8001', '三菱商事': '8058', 'NTT': '9432',
-    'KDDI': '9433', '住友電工': '5802', 'イオン': '8267', '三菱ガス化学': '4182',
-    '三菱HCキャピタル': '8593', 'クオリプス': '4894'
-}
-
-# ====== みんかぶ：株価取得 ======
-def get_price_minkabu(code):
-    url = f"https://minkabu.jp/stock/{code}"
-    r = requests.get(url, headers=headers)
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    tag = soup.select_one(".md_stockBoard_stockPrice")
-    if tag:
-        return float(tag.text.replace(",", ""))
-
-    return None
-
-# ====== みんかぶ：過去株価取得 ======
-def get_history_minkabu(code):
-    url = f"https://minkabu.jp/stock/{code}/daily"
-    r = requests.get(url, headers=headers)
-    soup = BeautifulSoup(r.text, "html.parser")
-
-    rows = soup.select("table.stocksTable tbody tr")
-    prices = []
-
-    for row in rows:
-        cols = row.select("td")
-        if len(cols) >= 5:
-            try:
-                close = float(cols[4].text.replace(",", ""))
-                prices.append(close)
-            except:
-                pass
-
-    return pd.Series(prices[::-1])  # 古い→新しい順
-
-# ====== LINE通知 ======
+# ==========================================
+# 2. LINE通知用の関数
+# ==========================================
 def notify_line(message):
     url = "https://api.line.me/v2/bot/message/push"
     headers_line = {
         "Content-Type": "application/json",
         "Authorization": f"Bearer {LINE_TOKEN}",
     }
-    data = {"to": LINE_USER_ID, "messages": [{"type": "text", "text": message}]}
-    requests.post(url, headers=headers_line, json=data)
+    data = {
+        "to": LINE_USER_ID,
+        "messages": [{"type": "text", "text": message}]
+    }
+    try:
+        response = requests.post(url, headers=headers_line, json=data)
+        response.raise_for_status()
+    except Exception as e:
+        print(f"LINE通知に失敗しました: {e}")
 
-# ====== 分析 ======
-def build_df_latest():
-    results = []
-
-    for name, qty in holdings.items():
-        code = ticker_map[name]
-
-        prices = get_history_minkabu(code)
-        if prices is None or len(prices) < 30:
-            continue
-
-        ma5 = prices.rolling(5).mean().iloc[-1]
-        ma25 = prices.rolling(25).mean().iloc[-1]
-        momentum = (ma5 - ma25) / ma25 if ma25 != 0 else 0
-
-        current_price = prices.iloc[-1]
-
-        beta = 1.0  # みんかぶでは取得不可 → 仮値
-
-        score_integ = 50 + (momentum * 100 * beta)
-        if beta < 0.8:
-            score_integ += 10
-
-        is_buy = (momentum > -0.005) or (score_integ > 45)
-        sig = "Buy" if is_buy else "Sell"
-
-        results.append({
-            "name": name,
-            "price": current_price,
-            "momentum": momentum,
-            "score_integ": score_integ,
-            "signal": sig
-        })
-
-    return pd.DataFrame(results)
-
-# ====== Top7 ======
-def pick_top7(df):
-    buy_df = df[df["signal"] == "Buy"]
-    return buy_df.sort_values("score_integ", ascending=False).head(7)
-
-# ====== main ======
+# ==========================================
+# 3. メイン処理
+# ==========================================
 def main():
-    df = build_df_latest()
+    try:
+        # スプレッドシート（CSV形式）を取得
+        response = requests.get(CSV_URL)
+        response.encoding = 'utf-8'
+        
+        # データを読み込む
+        # アップロードされたシートの列名（銘柄, 現在値, 合体スコア, シグナル）を使用します
+        df = pd.read_csv(io.StringIO(response.text))
 
-    if df.empty:
-        notify_line("データ取得に失敗しました。")
-        return
+        # 「シグナル」列に "Buy" という文字が含まれる銘柄を抽出
+        buy_df = df[df['シグナル'].str.contains('Buy', na=False)]
 
-    top7 = pick_top7(df)
+        if buy_df.empty:
+            notify_line("本日の分析：買い推奨(Buy)銘柄はありませんでした。")
+            return
 
-    if top7.empty:
-        notify_line("本日は Buy シグナルがありませんでした。")
-        return
+        # 「合体スコア」が高い順に最大7件選ぶ
+        top7 = buy_df.sort_values("合体スコア", ascending=False).head(7)
 
-    msg = "【今日の買い推奨 Top7】\n"
-    for _, r in top7.iterrows():
-        msg += f"{r['name']} 価格:{r['price']} 合体:{r['score_integ']:.1f}\n"
+        # 送信メッセージの作成
+        msg = "【今日の買い推奨 Top7】\n"
+        for _, r in top7.iterrows():
+            # 銘柄名、現在値、スコアを1行ずつ追加
+            msg += f"■{r['銘柄']}\n   価格:{r['現在値']} / スコア:{r['合体スコア']:.1f}\n"
 
-    notify_line(msg)
+        # LINEへ送信
+        notify_line(msg)
+        print("LINE通知が完了しました。")
+
+    except Exception as e:
+        error_msg = f"実行中にエラーが発生しました: {e}"
+        print(error_msg)
+        # エラーが起きたこともLINEで知らせる
+        # notify_line(error_msg)
 
 if __name__ == "__main__":
     main()
