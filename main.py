@@ -8,7 +8,7 @@ import io
 # ==========================================
 
 # 先ほどコピーしたGoogleスプレッドシートの長いURLを貼り付けてください
-CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTnmbJ3DubdIL0DmokPDIn0u9uDUZBUL7UVPOQ48Mu8qFRLaUBqekdg6BTZbzmFcURPXKY3qlpDsev4/pubhtml"
+CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTnmbJ3DubdIL0DmokPDIn0u9uDUZBUL7UVPOQ48Mu8qFRLaUBqekdg6BTZbzmFcURPXKY3qlpDsev4/pub?output=csv"
 
 # LINEのトークンとユーザーID
 LINE_TOKEN = os.getenv("LINE_TOKEN")
