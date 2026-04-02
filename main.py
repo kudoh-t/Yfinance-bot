@@ -1,76 +1,95 @@
 import os
 import requests
 import pandas as pd
+import pandas_datareader.data as web
+from datetime import datetime, timedelta
 import io
 
 # ==========================================
-# 1. 設定情報（ここを書き換えてください）
+# 1. 設定
 # ==========================================
-
-# 先ほどコピーしたGoogleスプレッドシートの長いURLを貼り付けてください
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTnmbJ3DubdIL0DmokPDIn0u9uDUZBUL7UVPOQ48Mu8qFRLaUBqekdg6BTZbzmFcURPXKY3qlpDsev4/pub?output=csv"
-
-# LINEのトークンとユーザーID
+ # 先ほどの pub?output=csv のURL
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 LINE_USER_ID = os.getenv("LINE_USER_ID")
 
-# ==========================================
-# 2. LINE通知用の関数
-# ==========================================
-def notify_line(message):
-    url = "https://api.line.me/v2/bot/message/push"
-    headers_line = {
-        "Content-Type": "application/json",
-        "Authorization": f"Bearer {LINE_TOKEN}",
-    }
-    data = {
-        "to": LINE_USER_ID,
-        "messages": [{"type": "text", "text": message}]
-    }
+def get_stock_price_stooq(ticker_code):
+    """Stooqから日本株の直近データを取得"""
+    target = f"{ticker_code}.JP"
+    end = datetime.now()
+    start = end - timedelta(days=60) # 25日移動平均を出すために少し長めに取得
     try:
-        response = requests.post(url, headers=headers_line, json=data)
-        response.raise_for_status()
+        df = web.DataReader(target, 'stooq', start, end)
+        return df.sort_index() # 日付順に並び替え
     except Exception as e:
-        print(f"LINE通知に失敗しました: {e}")
+        print(f"Error fetching {ticker_code}: {e}")
+        return None
 
-# ==========================================
-# 3. メイン処理
-# ==========================================
+def calculate_logic(df_price):
+    """
+    Python側での計算ロジック。
+    ここでMA乖離率、総合スコア、合体スコアを算出します。
+    """
+    # 最新の終値
+    latest_close = float(df_price['Close'].iloc[-1])
+    
+    # 25日移動平均線 (MA25)
+    ma25 = float(df_price['Close'].rolling(window=25).mean().iloc[-1])
+    
+    # MA乖離率 (%)
+    deviation = ((latest_close - ma25) / ma25) * 100
+    
+    # 【判定ロジック】
+    # 例：乖離率が低い（売られすぎ）ほど高スコアにする独自の重み付け
+    # スコア = (基準値100) - (乖離率の絶対値 * 係数) などのエンジニアリング数式
+    base_score = 60
+    logic_score = base_score - (deviation * 1.5) 
+    
+    return latest_close, deviation, logic_score
+
 def main():
-    try:
-        # スプレッドシート（CSV形式）を取得
-        response = requests.get(CSV_URL)
-        response.encoding = 'utf-8'
+    # スプレッドシートから「銘柄コード」のリストだけを読み込む
+    res = requests.get(CSV_URL)
+    res.encoding = 'utf-8'
+    stock_list = pd.read_csv(io.StringIO(res.text))
+
+    hit_stocks = []
+    
+    for _, row in stock_list.iterrows():
+        code = row['銘柄コード'] # スプレッドシートの列名に合わせてください
+        name = row['銘柄']
         
-        # データを読み込む
-        # アップロードされたシートの列名（銘柄, 現在値, 合体スコア, シグナル）を使用します
-        df = pd.read_csv(io.StringIO(response.text))
+        print(f"Analyzing: {name} ({code})...")
+        df_price = get_stock_price_stooq(code)
+        
+        if df_price is not None and len(df_price) >= 25:
+            price, dev, score = calculate_logic(df_price)
+            
+            # 判定：スコアが一定以上（例：60以上）ならLINE対象
+            if score >= 60:
+                hit_stocks.append({
+                    "name": name,
+                    "price": price,
+                    "dev": dev,
+                    "score": score
+                })
 
-        # 「シグナル」列に "Buy" という文字が含まれる銘柄を抽出
-        buy_df = df[df['シグナル'].str.contains('Buy', na=False)]
+    # 結果をスコア順に並び替えて上位7件を送信
+    if hit_stocks:
+        final_df = pd.DataFrame(hit_stocks).sort_values("score", ascending=False).head(7)
+        msg = "【Python完全計算：前場判定】\n"
+        for _, r in final_df.iterrows():
+            msg += f"■{r['name']}\n   株価:{r['price']:,.1f} / 乖離:{r['dev']:.1f}% / スコア:{r['score']:.1f}\n"
+        
+        send_line(msg)
+    else:
+        send_line("本日の条件合致銘柄はありませんでした。")
 
-        if buy_df.empty:
-            notify_line("本日の分析：買い推奨(Buy)銘柄はありませんでした。")
-            return
-
-        # 「合体スコア」が高い順に最大7件選ぶ
-        top7 = buy_df.sort_values("合体スコア", ascending=False).head(7)
-
-        # 送信メッセージの作成
-        msg = "【今日の買い推奨 Top7】\n"
-        for _, r in top7.iterrows():
-            # 銘柄名、現在値、スコアを1行ずつ追加
-            msg += f"■{r['銘柄']}\n   価格:{r['現在値']} / スコア:{r['合体スコア']:.1f}\n"
-
-        # LINEへ送信
-        notify_line(msg)
-        print("LINE通知が完了しました。")
-
-    except Exception as e:
-        error_msg = f"実行中にエラーが発生しました: {e}"
-        print(error_msg)
-        # エラーが起きたこともLINEで知らせる
-        # notify_line(error_msg)
+def send_line(message):
+    url = "https://api.line.me/v2/bot/message/push"
+    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
+    data = {"to": LINE_USER_ID, "messages": [{"type": "text", "text": message}]}
+    requests.post(url, headers=headers, json=data)
 
 if __name__ == "__main__":
     main()
