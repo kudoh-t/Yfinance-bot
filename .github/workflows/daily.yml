@@ -2,7 +2,7 @@ name: Daily Buy Signals to LINE
 
 on:
   schedule:
-    - cron: '40 2 * * *'   # JST 11:40
+    - cron: '38 2 * * *'   # JST 11:38（遅延を吸収して11:40前後に届く）
   workflow_dispatch: {}
 
 jobs:
