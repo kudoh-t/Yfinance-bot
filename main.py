@@ -32,15 +32,20 @@ STOCK_MASTER = {
     "パワーエックス": "485A"
 }
 
-# 環境変数から取得（GitHub Actionsの設定に合わせてください）
+# 環境変数（GitHub Actions から渡される）
 CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTnmbJ3DubdIL0DmokPDIn0u9uDUZBUL7UVPOQ48Mu8qFRLaUBqekdg6BTZbzmFcURPXKY3qlpDsev4/pub?output=csv"
- 
+
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 LINE_USER_ID = os.getenv("LINE_USER_ID")
 
+print("=== Debug: Environment Variables ===")
+print("LINE_TOKEN exists:", LINE_TOKEN is not None)
+print("LINE_USER_ID:", LINE_USER_ID)
+print("====================================")
+
+
 def get_latest_price(ticker_code):
     """Yahoo FinanceのWEB APIから最新株価を取得"""
-    # 485Aなどのアルファベットを含むコードにも対応
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{ticker_code}.T?range=2mo&interval=1d"
     headers = {'User-Agent': 'Mozilla/5.0'}
     try:
@@ -53,17 +58,15 @@ def get_latest_price(ticker_code):
         print(f"Error fetching {ticker_code}: {e}")
         return None
 
+
 def calculate_logic(df_price):
     """Python側での判定ロジック（MA乖離率・スコア）"""
     latest_close = float(df_price['Close'].iloc[-1])
-    # 25日移動平均
     ma25 = float(df_price['Close'].tail(25).mean())
-    # 乖離率
     deviation = ((latest_close - ma25) / ma25) * 100
-    
-    # 判定スコア（乖離率が低いほど高スコア）
     score = 60 - (deviation * 1.5)
     return latest_close, deviation, score
+
 
 def main():
     # 1. スプレッドシート（CSV）の読み込み
@@ -72,50 +75,45 @@ def main():
     df_list = pd.read_csv(io.StringIO(res.text))
 
     results = []
-    
+
     for index, row in df_list.iterrows():
         try:
-            # B列（1番目のインデックス）から銘柄名を取得
             name = str(row.iloc[1]).strip()
-            
-            # マスタから証券コードを引く
             code = STOCK_MASTER.get(name)
-            
+
             if not code:
                 continue
-                
+
             print(f"分析中: {name} ({code})...")
             df_price = get_latest_price(code)
-            
+
             if df_price is not None and len(df_price) >= 25:
                 price, dev, score = calculate_logic(df_price)
-                # スコア60以上を通知対象とする
                 if score >= 60:
                     results.append({
-                        "name": name, 
-                        "price": price, 
-                        "dev": dev, 
+                        "name": name,
+                        "price": price,
+                        "dev": dev,
                         "score": score
                     })
-                    
+
         except Exception as e:
             print(f"行 {index} でエラー: {e}")
             continue
 
     # 2. 結果を通知
     if results:
-        # スコア順にソートして上位7件を抽出
         final_df = pd.DataFrame(results).sort_values("score", ascending=False).head(7)
         msg = "【Python分析：前場判定結果】\n"
         for _, r in final_df.iterrows():
             msg += f"■{r['name']}\n   株価:{r['price']:,.1f}円 / 乖離:{r['dev']:.1f}% / スコア:{r['score']:.1f}\n"
         send_line(msg)
     else:
-        # 該当なしの場合も通知（動作確認のため）
         send_line("本日の判定条件（スコア60以上）に合致する銘柄はありませんでした。")
 
+
 def send_line(message):
-    """LINE NotifyまたはMessaging APIで送信"""
+    """LINE Messaging APIで送信（レスポンス表示付き）"""
     url = "https://api.line.me/v2/bot/message/push"
     headers = {
         "Content-Type": "application/json",
@@ -125,7 +123,15 @@ def send_line(message):
         "to": LINE_USER_ID,
         "messages": [{"type": "text", "text": message}]
     }
-    requests.post(url, headers=headers, json=data)
+
+    response = requests.post(url, headers=headers, json=data)
+
+    # ★ここが重要：レスポンスを必ず表示
+    print("=== LINE API Response ===")
+    print("Status Code:", response.status_code)
+    print("Response Body:", response.text)
+    print("==========================")
+
 
 if __name__ == "__main__":
     main()
