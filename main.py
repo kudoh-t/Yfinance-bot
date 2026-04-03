@@ -70,9 +70,14 @@ def calculate_logic(df_price):
 
 def main():
     # 1. スプレッドシート（CSV）の読み込み
-    res = requests.get(CSV_URL)
-    res.encoding = 'utf-8'
-    df_list = pd.read_csv(io.StringIO(res.text))
+    try:
+        res = requests.get(CSV_URL, timeout=10)
+        res.encoding = 'utf-8'
+        df_list = pd.read_csv(io.StringIO(res.text))
+    except Exception as e:
+        print("Error loading CSV:", e)
+        send_line("CSVの読み込みに失敗しました。")
+        return
 
     results = []
 
@@ -124,13 +129,14 @@ def send_line(message):
         "messages": [{"type": "text", "text": message}]
     }
 
-    response = requests.post(url, headers=headers, json=data)
-
-    # ★ここが重要：レスポンスを必ず表示
-    print("=== LINE API Response ===")
-    print("Status Code:", response.status_code)
-    print("Response Body:", response.text)
-    print("==========================")
+    try:
+        response = requests.post(url, headers=headers, json=data, timeout=10)
+        print("=== LINE API Response ===")
+        print("Status Code:", response.status_code)
+        print("Response Body:", response.text)
+        print("==========================")
+    except Exception as e:
+        print("LINE送信エラー:", e)
 
 
 if __name__ == "__main__":
