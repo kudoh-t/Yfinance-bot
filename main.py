@@ -25,38 +25,44 @@ def wait_until_1135():
 
 
 # ==========================================
-# 1. Yahooポートフォリオ CSV取得
+# 1. Google スプレッドシート CSV 取得
 # ==========================================
-def fetch_portfolio_csv(portfolio_id=2):
-    url = f"https://finance.yahoo.co.jp/portfolio/download?portfolioId={portfolio_id}&detail=1"
-    r = requests.get(url)
-    r.raise_for_status()
+CSV_URL = "https://docs.google.com/spreadsheets/d/1yEgThKuNfwvZ_3HAFFNNmHEunyHTms8B/export?format=csv"
 
-    csv_text = r.text
-    f = io.StringIO(csv_text)
-    reader = csv.DictReader(f)
+def fetch_spreadsheet_csv():
+    try:
+        r = requests.get(CSV_URL)
+        r.raise_for_status()
+        csv_text = r.text
 
-    stocks = []
-    for row in reader:
-        try:
-            code = row["コード"]
-            name = row["銘柄名"]
-            price = float(row["現在値"].replace(",", ""))
-            shares = int(row["保有数"].replace(",", ""))
-        except:
-            continue
+        f = io.StringIO(csv_text)
+        reader = csv.DictReader(f)
 
-        if shares <= 0:
-            continue
+        stocks = []
+        for row in reader:
+            try:
+                code = row["code"]
+                name = row["name"]
+                price = float(row["price"])
+                shares = int(row["shares"])
+            except:
+                continue
 
-        stocks.append({
-            "code": code,
-            "name": name,
-            "price": price,
-            "shares": shares,
-        })
+            if shares <= 0:
+                continue
 
-    return stocks
+            stocks.append({
+                "code": code,
+                "name": name,
+                "price": price,
+                "shares": shares,
+            })
+
+        return stocks
+
+    except Exception as e:
+        print("CSV取得エラー:", e)
+        return []
 
 
 # ==========================================
@@ -243,7 +249,9 @@ def send_line(message):
 def main():
     wait_until_1135()
 
-    stocks = fetch_portfolio_csv()
+    stocks = fetch_spreadsheet_csv()
+    print("取得銘柄数:", len(stocks))
+
     results = []
 
     for s in stocks:
