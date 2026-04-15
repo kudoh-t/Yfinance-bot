@@ -20,7 +20,7 @@ def wait_until_1135():
         t.sleep(5)
 
 # ==============================
-# 1. 銘柄リスト（ここだけ見ればよい）
+# 1. 銘柄リスト（唯一のデータソース）
 # ==============================
 NAME_TO_CODE = {
     "三菱重工": "7011",
@@ -51,14 +51,14 @@ NAME_TO_CODE = {
 }
 
 # ==============================
-# 2. 多重フェイルオーバーで価格取得
+# 2. 多重フェイルオーバー
 # ==============================
 TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
 
 def fetch_twelve(code):
-    if not TWELVE_API_KEY:
-        return None
     try:
+        if not TWELVE_API_KEY:
+            return None
         url = "https://api.twelvedata.com/time_series"
         params = {
             "symbol": f"{code}.T",
@@ -77,7 +77,7 @@ def fetch_twelve(code):
         df.set_index("datetime", inplace=True)
         df["close"] = df["close"].astype(float)
         return df.sort_index()
-    except Exception:
+    except:
         return None
 
 def fetch_yahoo_json(code):
@@ -99,7 +99,7 @@ def fetch_yahoo_json(code):
         df.set_index("datetime", inplace=True)
         df["close"] = df["close"].astype(float)
         return df.sort_index()
-    except Exception:
+    except:
         return None
 
 def fetch_yahoo_html(code):
@@ -114,7 +114,7 @@ def fetch_yahoo_html(code):
         price = float(m.group(1))
         df = pd.DataFrame({"close": [price]}, index=[datetime.now()])
         return df
-    except Exception:
+    except:
         return None
 
 def fetch_yahoo_hist(code):
@@ -126,7 +126,7 @@ def fetch_yahoo_hist(code):
         df.set_index("Date", inplace=True)
         df.rename(columns={"Close": "close"}, inplace=True)
         return df[["close"]].sort_index()
-    except Exception:
+    except:
         return None
 
 def get_price_df(code):
@@ -140,23 +140,26 @@ def get_price_df(code):
 # 3. ロジック計算
 # ==============================
 def calc_logic(df):
-    if len(df) < 25:
+    try:
+        if len(df) < 25:
+            return None
+        close = df["close"]
+        ma5 = close.rolling(5).mean()
+        ma25 = close.rolling(25).mean()
+        latest = float(close.iloc[-1])
+        dev = (latest - ma25.iloc[-1]) / ma25.iloc[-1] * 100
+        mom = (ma5.iloc[-1] - ma25.iloc[-1]) / ma25.iloc[-1] * 100
+        score = min(100, max(0, 60 - dev * 2) + max(0, 40 + mom * 4))
+        trend = "UP" if ma5.iloc[-1] > ma25.iloc[-1] else "DOWN"
+        return {
+            "price": latest,
+            "dev": dev,
+            "mom": mom,
+            "score": score,
+            "trend": trend,
+        }
+    except:
         return None
-    close = df["close"]
-    ma5 = close.rolling(5).mean()
-    ma25 = close.rolling(25).mean()
-    latest = float(close.iloc[-1])
-    dev = (latest - ma25.iloc[-1]) / ma25.iloc[-1] * 100
-    mom = (ma5.iloc[-1] - ma25.iloc[-1]) / ma25.iloc[-1] * 100
-    score = min(100, max(0, 60 - dev * 2) + max(0, 40 + mom * 4))
-    trend = "UP" if ma5.iloc[-1] > ma25.iloc[-1] else "DOWN"
-    return {
-        "price": latest,
-        "dev": dev,
-        "mom": mom,
-        "score": score,
-        "trend": trend,
-    }
 
 # ==============================
 # 4. 理由付け
@@ -216,12 +219,12 @@ def main():
     for name, code in NAME_TO_CODE.items():
         df = get_price_df(code)
         if df is None:
-            print(f"{name}({code}) データ取得失敗 → スキップ")
+            print(f"{name}({code}) → データ取得失敗（スキップ）")
             continue
 
         logic = calc_logic(df)
         if logic is None:
-            print(f"{name}({code}) ロジック計算不可 → スキップ")
+            print(f"{name}({code}) → ロジック不可（スキップ）")
             continue
 
         results.append({
@@ -232,7 +235,7 @@ def main():
         })
 
     if not results:
-        send_line("全銘柄でデータ取得に失敗しました。API 側の障害の可能性があります。")
+        send_line("全銘柄でデータ取得に失敗しました（API 障害の可能性）")
         return
 
     top7 = sorted(results, key=lambda x: x["score"], reverse=True)[:7]
