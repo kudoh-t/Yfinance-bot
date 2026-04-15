@@ -1,4 +1,5 @@
 import os
+import csv
 import requests
 import pandas as pd
 import io
@@ -6,9 +7,15 @@ from datetime import datetime, time
 import time as t
 
 # ==========================================
-# 0. 11:35 まで待機（相場同期）
+# 0. 11:35 まで待機（手動実行はスキップ）
 # ==========================================
 def wait_until_1135():
+    # GitHub Actions の手動実行なら即通知
+    if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
+        print("手動実行 → 11:35待機をスキップします")
+        return
+
+    # cron 実行時は 11:35 まで待機
     target = time(11, 35)
     while True:
         now = datetime.now().time()
@@ -197,17 +204,10 @@ def build_reason(dev, score, momentum):
 # 5. PF総括
 # ==========================================
 def build_portfolio_comment(stocks):
-    total_value = sum(s["price"] * s["shares"] for s in stocks)
-    weighted_beta = 0.85  # 仮の固定値（必要なら計算式に変更可能）
-
     top = max(stocks, key=lambda x: x["score"])
     comment = []
 
-    if weighted_beta < 0.75:
-        comment.append("全体としてディフェンシブ寄りで、下落耐性が高い構造です。")
-    else:
-        comment.append("市場と同程度の値動きで、バランスの取れた構造です。")
-
+    comment.append("全体として、市場と同程度の値動きでバランスの取れた構造です。")
     comment.append(f"最も強いのは「{top['name']}」で、短期的な上昇余地が期待されます。")
     comment.append("全体として、短期の反発余地を探りつつ、リスクを抑えた運用ができています。")
 
