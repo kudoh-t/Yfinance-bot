@@ -2,62 +2,63 @@ import os
 import requests
 import pandas as pd
 import io
-from datetime import datetime
+from datetime import datetime, time
+import time as t
 
 # ==========================================
-# 1. 設定：銘柄名とコードの対応マスタ（確定版）
+# 0. 11:35 まで待機（相場同期）
 # ==========================================
-STOCK_MASTER = {
-    "三菱重工": "7011",
-    "ビジネスエンジ": "4828",
-    "三井住友ＦＧ": "8316",
-    "三菱ＵＦＪ": "8306",
-    "三菱商事": "8058",
-    "ＩＮＰＥＸ": "1605",
-    "三井海洋": "6269",
-    "三菱ＨＣ": "8593",
-    "ＮＴＴ": "9432",
-    "ＫＤＤＩ": "9433",
-    "伊藤忠": "8001",
-    "千葉銀行": "8331",
-    "信越化学": "4063",
-    "村田製作所": "6981",
-    "オリックス": "8591",
-    "日揮": "1963",
-    "ヒューリック": "3003",
-    "住友電工": "5802",
-    "三菱ガス化学": "4182",
-    "クオリプス": "4894",
-    "トリケミカル": "4369",
-    "パワーエックス": "485A"
-}
+def wait_until_1135():
+    target = time(11, 35)
+    while True:
+        now = datetime.now().time()
+        if now >= target:
+            break
+        t.sleep(5)
+
 
 # ==========================================
-# 2. 環境変数
+# 1. Yahooポートフォリオ CSV取得
 # ==========================================
-CSV_URL = "https://docs.google.com/spreadsheets/d/e/2PACX-1vTnmbJ3DubdIL0DmokPDIn0u9uDUZBUL7UVPOQ48Mu8qFRLaUBqekdg6BTZbzmFcURPXKY3qlpDsev4/pub?output=csv"
+def fetch_portfolio_csv(portfolio_id=2):
+    url = f"https://finance.yahoo.co.jp/portfolio/download?portfolioId={portfolio_id}"
+    r = requests.get(url)
+    r.raise_for_status()
 
-LINE_TOKEN = os.getenv("LINE_TOKEN")
-LINE_USER_ID = os.getenv("LINE_USER_ID")
+    csv_text = r.text
+    f = io.StringIO(csv_text)
+    reader = csv.DictReader(f)
+
+    stocks = []
+    for row in reader:
+        try:
+            code = row["コード"]
+            name = row["銘柄名"]
+            price = float(row["現在値"].replace(",", ""))
+            shares = int(row["保有数"].replace(",", ""))
+        except:
+            continue
+
+        if shares <= 0:
+            continue
+
+        stocks.append({
+            "code": code,
+            "name": name,
+            "price": price,
+            "shares": shares,
+        })
+
+    return stocks
+
+
+# ==========================================
+# 2. Twelve Data → Yahoo フェイルオーバー
+# ==========================================
 TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
 
-print("=== Debug: Environment Variables ===")
-print("LINE_TOKEN exists:", LINE_TOKEN is not None)
-print("LINE_USER_ID:", LINE_USER_ID)
-print("TWELVE_API_KEY exists:", TWELVE_API_KEY is not None)
-print("====================================")
-
-
-# ==========================================
-# 3. データ取得系
-# ==========================================
 def get_price_from_twelve(symbol_code):
-    """
-    Twelve Data の time_series API から日足データを取得し、
-    pandas.DataFrame（datetime index, close列）を返す
-    """
     if not TWELVE_API_KEY:
-        print("TWELVE_API_KEY が設定されていません。")
         return None
 
     symbol = f"{symbol_code}.T"
@@ -65,7 +66,7 @@ def get_price_from_twelve(symbol_code):
     params = {
         "symbol": symbol,
         "interval": "1day",
-        "outputsize": 60,  # MA25計算に十分な日数
+        "outputsize": 60,
         "apikey": TWELVE_API_KEY,
         "timezone": "Asia/Tokyo",
         "order": "asc"
@@ -74,7 +75,6 @@ def get_price_from_twelve(symbol_code):
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
         if "values" not in data:
-            print(f"Twelve Data error for {symbol_code}: {data}")
             return None
         df = pd.DataFrame(data["values"])
         df["datetime"] = pd.to_datetime(df["datetime"])
@@ -82,16 +82,11 @@ def get_price_from_twelve(symbol_code):
         df["close"] = df["close"].astype(float)
         df = df.sort_index()
         return df
-    except Exception as e:
-        print(f"Error fetching from Twelve Data {symbol_code}: {e}")
+    except:
         return None
 
 
 def get_price_from_yahoo(symbol_code):
-    """
-    Yahoo Finance の chart API から日足データを取得し、
-    pandas.DataFrame（datetime index, close列）を返す
-    """
     symbol = f"{symbol_code}.T"
     url = f"https://query1.finance.yahoo.com/v8/finance/chart/{symbol}?range=2mo&interval=1d"
     headers = {"User-Agent": "Mozilla/5.0"}
@@ -100,13 +95,11 @@ def get_price_from_yahoo(symbol_code):
         data = r.json()
         result = data.get("chart", {}).get("result", [])
         if not result:
-            print(f"Yahoo result empty for {symbol_code}: {data}")
             return None
         result = result[0]
         timestamps = result.get("timestamp", [])
         closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
         if not timestamps or not closes:
-            print(f"Yahoo data missing for {symbol_code}")
             return None
         df = pd.DataFrame({"timestamp": timestamps, "close": closes})
         df.dropna(subset=["close"], inplace=True)
@@ -115,40 +108,26 @@ def get_price_from_yahoo(symbol_code):
         df["close"] = df["close"].astype(float)
         df = df.sort_index()
         return df
-    except Exception as e:
-        print(f"Error fetching from Yahoo {symbol_code}: {e}")
+    except:
         return None
 
 
 def get_price_with_failover(symbol_code):
-    """
-    Twelve Data → 失敗したら Yahoo → それでもダメなら None
-    """
     df = get_price_from_twelve(symbol_code)
     if df is not None and len(df) >= 25:
         return df
 
-    print(f"Falling back to Yahoo for {symbol_code}...")
     df = get_price_from_yahoo(symbol_code)
     if df is not None and len(df) >= 25:
         return df
 
-    print(f"Both Twelve Data and Yahoo failed or insufficient data for {symbol_code}.")
     return None
 
 
 # ==========================================
-# 4. ロジック計算
+# 3. ロジック計算（MA5/25・乖離・モメンタム・スコア）
 # ==========================================
 def calculate_logic(df_price):
-    """
-    改良版ロジック：
-    - MA5 / MA25
-    - 乖離率（最新終値 vs MA25）
-    - モメンタム（MA5とMA25の差）
-    - 合成スコア（乖離＋モメンタム）
-    - トレンド判定
-    """
     if len(df_price) < 25:
         return None
 
@@ -160,22 +139,13 @@ def calculate_logic(df_price):
     latest_ma5 = float(ma5.iloc[-1])
     latest_ma25 = float(ma25.iloc[-1])
 
-    # 25日線乖離率
     deviation = ((latest_close - latest_ma25) / latest_ma25) * 100
-
-    # モメンタム（MA5 vs MA25）
     momentum = (latest_ma5 - latest_ma25) / latest_ma25 * 100
 
-    # 乖離率スコア（最大60点）
     score_dev = max(0, 60 - deviation * 2)
-
-    # モメンタムスコア（最大40点）
     score_mom = max(0, 40 + momentum * 4)
-
-    # 合成スコア（最大100点）
     score_integ = min(100, score_dev + score_mom)
 
-    # トレンド判定（シンプル版）
     if latest_ma5 > latest_ma25:
         trend = "UP"
     elif latest_ma5 < latest_ma25:
@@ -183,7 +153,6 @@ def calculate_logic(df_price):
     else:
         trend = "FLAT"
 
-    # Buy 条件（緩和版）
     is_buy = (momentum > -1.0) or (score_integ >= 45)
 
     return {
@@ -197,99 +166,63 @@ def calculate_logic(df_price):
 
 
 # ==========================================
-# 5. メイン処理
+# 4. 理由付け（自然文）
 # ==========================================
-def main():
-    # 1. スプレッドシート（CSV）の読み込み
-    try:
-        res = requests.get(CSV_URL, timeout=10)
-        res.encoding = "utf-8"
-        df_list = pd.read_csv(io.StringIO(res.text))
-    except Exception as e:
-        print("Error loading CSV:", e)
-        send_line("CSVの読み込みに失敗しました。")
-        return
+def build_reason(dev, score, momentum):
+    reasons = []
 
-    results = []
-
-    for index, row in df_list.iterrows():
-        try:
-            name = str(row.iloc[1]).strip()
-            code = STOCK_MASTER.get(name)
-
-            if not code:
-                continue
-
-            print(f"分析中: {name} ({code})...")
-
-            df_price = get_price_with_failover(code)
-            if df_price is None:
-                continue
-
-            logic = calculate_logic(df_price)
-            if logic is None:
-                continue
-
-            results.append({
-                "name": name,
-                "price": logic["latest_close"],
-                "dev": logic["deviation"],
-                "momentum": logic["momentum"],
-                "score": logic["score_integ"],
-                "trend": logic["trend"],
-                "is_buy": logic["is_buy"]
-            })
-
-        except Exception as e:
-            print(f"行 {index} でエラー: {e}")
-            continue
-
-    # 2. Top7 抽出（Buy 条件に関係なくスコア上位7件）
-    if results:
-        final_df = (
-            pd.DataFrame(results)
-            .sort_values("score", ascending=False)
-            .head(7)
-        )
-
-        # Buy / Sell ラベル付与
-        final_df["signal"] = final_df["is_buy"].apply(lambda x: "Buy" if x else "Sell")
-
-        msg = "【本日の買い推奨Top7】\n"
-        msg += "判定根拠：\n"
-        msg += "・MA5/MA25の位置関係\n"
-        msg += "・25日線乖離率\n"
-        msg += "・モメンタム（直近の強さ）\n"
-        msg += "・スコア上位7銘柄を抽出（Buy条件は参考情報）\n\n"
-
-        for _, r in final_df.iterrows():
-            msg += f"■{r['name']}（{r['signal']} / トレンド:{r['trend']}）\n"
-            msg += (
-                f"   株価:{r['price']:,.1f}円 / "
-                f"乖離:{r['dev']:.1f}% / "
-                f"モメンタム:{r['momentum']:.2f}% / "
-                f"スコア:{r['score']:.1f}\n"
-            )
-
-        send_line(msg)
+    if dev > 0:
+        reasons.append("短期トレンドが上向きに転じています")
+    elif dev > -2:
+        reasons.append("下落が一服し、底打ちの兆しがあります")
     else:
-        msg = "【本日の買い推奨Top7】\n"
-        msg += "判定根拠：\n"
-        msg += "・MA5/MA25の位置関係\n"
-        msg += "・25日線乖離率\n"
-        msg += "・モメンタム（直近の強さ）\n"
-        msg += "・スコア上位7銘柄を抽出（Buy条件は参考情報）\n\n"
-        msg += "本日の条件に合致する銘柄はありませんでした。"
-        send_line(msg)
+        reasons.append("トレンドは弱いものの、反発余地があります")
+
+    if score >= 85:
+        reasons.append("総合スコアが非常に高く、基礎体力が強い銘柄です")
+    elif score >= 70:
+        reasons.append("総合スコアが良好で、安定した評価を受けています")
+    else:
+        reasons.append("スコアは中立で、様子見が必要です")
+
+    if momentum > 0:
+        reasons.append("モメンタムが強く、上昇圧力があります")
+    else:
+        reasons.append("モメンタムは弱めですが、反転の可能性があります")
+
+    return "・" + "\n・".join(reasons)
 
 
 # ==========================================
-# 6. LINE 送信
+# 5. PF総括
 # ==========================================
+def build_portfolio_comment(stocks):
+    total_value = sum(s["price"] * s["shares"] for s in stocks)
+    weighted_beta = 0.85  # 仮の固定値（必要なら計算式に変更可能）
+
+    top = max(stocks, key=lambda x: x["score"])
+    comment = []
+
+    if weighted_beta < 0.75:
+        comment.append("全体としてディフェンシブ寄りで、下落耐性が高い構造です。")
+    else:
+        comment.append("市場と同程度の値動きで、バランスの取れた構造です。")
+
+    comment.append(f"最も強いのは「{top['name']}」で、短期的な上昇余地が期待されます。")
+    comment.append("全体として、短期の反発余地を探りつつ、リスクを抑えた運用ができています。")
+
+    return "\n".join(comment)
+
+
+# ==========================================
+# 6. LINE送信
+# ==========================================
+LINE_TOKEN = os.getenv("LINE_TOKEN")
+LINE_USER_ID = os.getenv("LINE_USER_ID")
+
 def send_line(message):
-    """LINE Messaging APIで送信（レスポンス表示付き）"""
     if not LINE_TOKEN or not LINE_USER_ID:
-        print("LINE 環境変数が設定されていません。")
+        print("LINE環境変数が未設定です")
         return
 
     url = "https://api.line.me/v2/bot/message/push"
@@ -301,15 +234,57 @@ def send_line(message):
         "to": LINE_USER_ID,
         "messages": [{"type": "text", "text": message}]
     }
+    requests.post(url, headers=headers, json=data)
 
-    try:
-        response = requests.post(url, headers=headers, json=data, timeout=10)
-        print("=== LINE API Response ===")
-        print("Status Code:", response.status_code)
-        print("Response Body:", response.text)
-        print("==========================")
-    except Exception as e:
-        print("LINE送信エラー:", e)
+
+# ==========================================
+# 7. メイン処理
+# ==========================================
+def main():
+    wait_until_1135()
+
+    stocks = fetch_portfolio_csv()
+    results = []
+
+    for s in stocks:
+        df_price = get_price_with_failover(s["code"])
+        if df_price is None:
+            continue
+
+        logic = calculate_logic(df_price)
+        if logic is None:
+            continue
+
+        s.update({
+            "dev": logic["deviation"],
+            "momentum": logic["momentum"],
+            "score": logic["score_integ"],
+            "trend": logic["trend"],
+            "is_buy": logic["is_buy"],
+            "reason": build_reason(logic["deviation"], logic["score_integ"], logic["momentum"])
+        })
+
+        results.append(s)
+
+    if not results:
+        send_line("【本日の買い推奨Top7】\nデータ取得に失敗しました。")
+        return
+
+    final_df = (
+        pd.DataFrame(results)
+        .sort_values("score", ascending=False)
+        .head(7)
+    )
+
+    msg = "【本日の買い推奨Top7】\n\n"
+    for _, r in final_df.iterrows():
+        msg += f"■{r['name']}（{'Buy' if r['is_buy'] else 'Sell'} / トレンド:{r['trend']}）\n"
+        msg += f"   株価:{r['price']:,.1f}円 / 乖離:{r['dev']:.1f}% / モメンタム:{r['momentum']:.2f}% / スコア:{r['score']:.1f}\n"
+        msg += f"{r['reason']}\n\n"
+
+    msg += "【PF総括】\n" + build_portfolio_comment(results)
+
+    send_line(msg)
 
 
 if __name__ == "__main__":
