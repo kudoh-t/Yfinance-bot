@@ -1,19 +1,17 @@
 import os
-import csv
 import requests
 import pandas as pd
 import io
 from datetime import datetime, time
 import time as t
 
-# ==========================================
+# ==============================
 # 0. 11:35 まで待機（手動実行はスキップ）
-# ==========================================
+# ==============================
 def wait_until_1135():
     if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
         print("手動実行 → 待機スキップ")
         return
-
     target = time(11, 35)
     while True:
         now = datetime.now().time()
@@ -21,37 +19,9 @@ def wait_until_1135():
             break
         t.sleep(5)
 
-
-# ==========================================
-# 1. スプレッドシート CSV 読み取り（銘柄列だけ使う）
-# ==========================================
-CSV_URL = "https://docs.google.com/spreadsheets/d/1yEgThKuNfwvZ_3HAFFNNmHEunyHTms8B/export?format=csv"
-
-def fetch_stock_names():
-    try:
-        r = requests.get(CSV_URL)
-        r.raise_for_status()
-        csv_text = r.text
-
-        f = io.StringIO(csv_text)
-        reader = csv.DictReader(f)
-
-        names = []
-        for row in reader:
-            name = row.get("銘柄")
-            if name and name.strip():
-                names.append(name.strip())
-
-        return names
-
-    except Exception as e:
-        print("CSV取得エラー:", e)
-        return []
-
-
-# ==========================================
-# 2. 銘柄名 → 証券コード（あなた専用マッピング）
-# ==========================================
+# ==============================
+# 1. 銘柄リスト（ここだけ見ればよい）
+# ==============================
 NAME_TO_CODE = {
     "三菱重工": "7011",
     "ビジネスエンジ": "4828",
@@ -80,13 +50,11 @@ NAME_TO_CODE = {
     "パワーエックス": "485A",
 }
 
-
-# ==========================================
-# 3. 多重フェイルオーバーで株価取得（絶対 None にしない）
-# ==========================================
+# ==============================
+# 2. 多重フェイルオーバーで価格取得
+# ==============================
 TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
 
-# --- ① Twelve Data ---
 def fetch_twelve(code):
     if not TWELVE_API_KEY:
         return None
@@ -98,7 +66,7 @@ def fetch_twelve(code):
             "outputsize": 60,
             "apikey": TWELVE_API_KEY,
             "timezone": "Asia/Tokyo",
-            "order": "asc"
+            "order": "asc",
         }
         r = requests.get(url, params=params, timeout=10)
         data = r.json()
@@ -109,10 +77,9 @@ def fetch_twelve(code):
         df.set_index("datetime", inplace=True)
         df["close"] = df["close"].astype(float)
         return df.sort_index()
-    except:
+    except Exception:
         return None
 
-# --- ② Yahoo JSON ---
 def fetch_yahoo_json(code):
     try:
         url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}.T?range=2mo&interval=1d"
@@ -132,28 +99,24 @@ def fetch_yahoo_json(code):
         df.set_index("datetime", inplace=True)
         df["close"] = df["close"].astype(float)
         return df.sort_index()
-    except:
+    except Exception:
         return None
 
-# --- ③ Yahoo HTML ---
 def fetch_yahoo_html(code):
     try:
         url = f"https://finance.yahoo.co.jp/quote/{code}.T"
         r = requests.get(url, timeout=10)
         text = r.text
-
         import re
         m = re.search(r'"regularMarketPrice":\{"raw":([\d\.]+)', text)
         if not m:
             return None
         price = float(m.group(1))
-
         df = pd.DataFrame({"close": [price]}, index=[datetime.now()])
         return df
-    except:
+    except Exception:
         return None
 
-# --- ④ Yahoo 過去データ（最終手段） ---
 def fetch_yahoo_hist(code):
     try:
         url = f"https://query1.finance.yahoo.com/v7/finance/download/{code}.T?interval=1d&events=history"
@@ -163,50 +126,41 @@ def fetch_yahoo_hist(code):
         df.set_index("Date", inplace=True)
         df.rename(columns={"Close": "close"}, inplace=True)
         return df[["close"]].sort_index()
-    except:
+    except Exception:
         return None
 
-
-# --- 総合フェイルオーバー ---
 def get_price_df(code):
     for func in [fetch_twelve, fetch_yahoo_json, fetch_yahoo_html, fetch_yahoo_hist]:
         df = func(code)
         if df is not None and len(df) > 0:
             return df
-    return None  # ここには基本到達しない
+    return None
 
-
-# ==========================================
-# 4. ロジック計算
-# ==========================================
+# ==============================
+# 3. ロジック計算
+# ==============================
 def calc_logic(df):
     if len(df) < 25:
         return None
-
     close = df["close"]
     ma5 = close.rolling(5).mean()
     ma25 = close.rolling(25).mean()
-
     latest = float(close.iloc[-1])
     dev = (latest - ma25.iloc[-1]) / ma25.iloc[-1] * 100
     mom = (ma5.iloc[-1] - ma25.iloc[-1]) / ma25.iloc[-1] * 100
-
     score = min(100, max(0, 60 - dev * 2) + max(0, 40 + mom * 4))
-
     trend = "UP" if ma5.iloc[-1] > ma25.iloc[-1] else "DOWN"
-
     return {
         "price": latest,
         "dev": dev,
         "mom": mom,
         "score": score,
-        "trend": trend
+        "trend": trend,
     }
 
-
-# ==========================================
-# 5. 理由付け
-# ==========================================
+# ==============================
+# 4. 理由付け
+# ==============================
 def build_reason(dev, score, mom):
     reasons = []
     if dev > 0:
@@ -230,66 +184,66 @@ def build_reason(dev, score, mom):
 
     return "・" + "\n・".join(reasons)
 
-
-# ==========================================
-# 6. LINE送信
-# ==========================================
+# ==============================
+# 5. LINE送信
+# ==============================
 LINE_TOKEN = os.getenv("LINE_TOKEN")
 LINE_USER_ID = os.getenv("LINE_USER_ID")
 
 def send_line(msg):
     if not LINE_TOKEN or not LINE_USER_ID:
         print("LINE環境変数が未設定")
+        print(msg)
         return
     url = "https://api.line.me/v2/bot/message/push"
-    headers = {"Content-Type": "application/json", "Authorization": f"Bearer {LINE_TOKEN}"}
-    data = {"to": LINE_USER_ID, "messages": [{"type": "text", "text": msg}]}
+    headers = {
+        "Content-Type": "application/json",
+        "Authorization": f"Bearer {LINE_TOKEN}",
+    }
+    data = {
+        "to": LINE_USER_ID,
+        "messages": [{"type": "text", "text": msg}],
+    }
     requests.post(url, headers=headers, json=data)
 
-
-# ==========================================
-# 7. メイン処理
-# ==========================================
+# ==============================
+# 6. メイン処理
+# ==============================
 def main():
     wait_until_1135()
 
-    names = fetch_stock_names()
     results = []
-
-    for name in names:
-        code = NAME_TO_CODE.get(name)
-        if not code:
-            continue
-
+    for name, code in NAME_TO_CODE.items():
         df = get_price_df(code)
         if df is None:
+            print(f"{name}({code}) データ取得失敗 → スキップ")
             continue
 
         logic = calc_logic(df)
         if logic is None:
+            print(f"{name}({code}) ロジック計算不可 → スキップ")
             continue
 
         results.append({
             "name": name,
             "code": code,
             **logic,
-            "reason": build_reason(logic["dev"], logic["score"], logic["mom"])
+            "reason": build_reason(logic["dev"], logic["score"], logic["mom"]),
         })
 
     if not results:
-        send_line("データ取得に失敗しました（フェイルオーバー全滅）")
+        send_line("全銘柄でデータ取得に失敗しました。API 側の障害の可能性があります。")
         return
 
     top7 = sorted(results, key=lambda x: x["score"], reverse=True)[:7]
 
-    msg = "【本日のBuy Top7】\n\n"
+    msg = "【本日の Buy Top7】\n\n"
     for r in top7:
         msg += f"■{r['name']}（{r['code']}）\n"
         msg += f"   株価:{r['price']:.1f}円 / 乖離:{r['dev']:.1f}% / モメンタム:{r['mom']:.2f}% / スコア:{r['score']:.1f}\n"
         msg += f"{r['reason']}\n\n"
 
     send_line(msg)
-
 
 if __name__ == "__main__":
     main()
