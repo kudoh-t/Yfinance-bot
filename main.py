@@ -28,7 +28,7 @@ def wait_until_1135():
 # 1. Yahooポートフォリオ CSV取得
 # ==========================================
 def fetch_portfolio_csv(portfolio_id=2):
-    url = f"https://finance.yahoo.co.jp/portfolio/download?portfolioId={portfolio_id}"
+    url = f"https://finance.yahoo.co.jp/portfolio/download?portfolioId={portfolio_id}&detail=1"
     r = requests.get(url)
     r.raise_for_status()
 
