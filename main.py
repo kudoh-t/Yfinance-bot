@@ -4,14 +4,17 @@ import pandas as pd
 import io
 from datetime import datetime, time
 import time as t
+import re
 
 # ==============================
-# 0. 11:35 まで待機（手動実行はスキップ）
+# 0. 11:35 まで待機（GitHub Actions ではスキップ）
 # ==============================
 def wait_until_1135():
-    if os.getenv("GITHUB_EVENT_NAME") == "workflow_dispatch":
-        print("手動実行 → 待機スキップ")
+    # CI（GitHub Actions）では待機しない
+    if os.getenv("GITHUB_ACTIONS") == "true":
+        print("GitHub Actions → 待機スキップ")
         return
+
     target = time(11, 35)
     while True:
         now = datetime.now().time()
@@ -51,90 +54,79 @@ NAME_TO_CODE = {
 }
 
 # ==============================
-# 2. 多重フェイルオーバー
+# 2. データ取得（Google Finance + Yahoo HTML）
 # ==============================
-TWELVE_API_KEY = os.getenv("TWELVE_API_KEY")
 
-def fetch_twelve(code):
+def fetch_google(code):
+    """
+    過去データ（終値）を Google Finance から取得（1ヶ月分）
+    """
     try:
-        if not TWELVE_API_KEY:
-            return None
-        url = "https://api.twelvedata.com/time_series"
-        params = {
-            "symbol": f"{code}.T",
-            "interval": "1day",
-            "outputsize": 60,
-            "apikey": TWELVE_API_KEY,
-            "timezone": "Asia/Tokyo",
-            "order": "asc",
-        }
-        r = requests.get(url, params=params, timeout=10)
-        data = r.json()
-        if "values" not in data:
-            return None
-        df = pd.DataFrame(data["values"])
-        df["datetime"] = pd.to_datetime(df["datetime"])
-        df.set_index("datetime", inplace=True)
-        df["close"] = df["close"].astype(float)
-        return df.sort_index()
-    except:
-        return None
+        url = f"https://www.google.com/finance/quote/{code}:TSE?window=1M&output=csv"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
 
-def fetch_yahoo_json(code):
-    try:
-        url = f"https://query1.finance.yahoo.com/v8/finance/chart/{code}.T?range=2mo&interval=1d"
-        r = requests.get(url, timeout=10)
-        data = r.json()
-        result = data.get("chart", {}).get("result", [])
-        if not result:
-            return None
-        result = result[0]
-        ts = result.get("timestamp", [])
-        closes = result.get("indicators", {}).get("quote", [{}])[0].get("close", [])
-        if not ts or not closes:
-            return None
-        df = pd.DataFrame({"timestamp": ts, "close": closes})
-        df.dropna(subset=["close"], inplace=True)
-        df["datetime"] = pd.to_datetime(df["timestamp"], unit="s")
-        df.set_index("datetime", inplace=True)
-        df["close"] = df["close"].astype(float)
-        return df.sort_index()
-    except:
-        return None
-
-def fetch_yahoo_html(code):
-    try:
-        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
-        r = requests.get(url, timeout=10)
-        text = r.text
-        import re
-        m = re.search(r'"regularMarketPrice":\{"raw":([\d\.]+)', text)
-        if not m:
-            return None
-        price = float(m.group(1))
-        df = pd.DataFrame({"close": [price]}, index=[datetime.now()])
-        return df
-    except:
-        return None
-
-def fetch_yahoo_hist(code):
-    try:
-        url = f"https://query1.finance.yahoo.com/v7/finance/download/{code}.T?interval=1d&events=history"
-        r = requests.get(url, timeout=10)
         df = pd.read_csv(io.StringIO(r.text))
+        # Google Finance の CSV は "Date","Close" などの列を持つ想定
+        if "Date" not in df.columns or "Close" not in df.columns:
+            return None
+
         df["Date"] = pd.to_datetime(df["Date"])
         df.set_index("Date", inplace=True)
         df.rename(columns={"Close": "close"}, inplace=True)
-        return df[["close"]].sort_index()
-    except:
+        df = df[["close"]].sort_index()
+        return df
+    except Exception as e:
+        print(f"Google取得失敗 {code}: {e}")
         return None
 
+
+def fetch_yahoo_realtime(code):
+    """
+    当日リアルタイム価格（前場終値を含む）を Yahoo HTML から取得
+    """
+    try:
+        url = f"https://finance.yahoo.co.jp/quote/{code}.T"
+        headers = {"User-Agent": "Mozilla/5.0"}
+        r = requests.get(url, headers=headers, timeout=10)
+        r.raise_for_status()
+        text = r.text
+
+        m = re.search(r'"regularMarketPrice":\{"raw":\s*([\d\.]+)', text)
+        if not m:
+            return None
+
+        price = float(m.group(1))
+        df = pd.DataFrame({"close": [price]}, index=[datetime.now()])
+        return df
+    except Exception as e:
+        print(f"Yahoo HTML取得失敗 {code}: {e}")
+        return None
+
+
 def get_price_df(code):
-    for func in [fetch_twelve, fetch_yahoo_json, fetch_yahoo_html, fetch_yahoo_hist]:
-        df = func(code)
-        if df is not None and len(df) > 0:
-            return df
-    return None
+    """
+    過去データ：Google
+    当日価格：Yahoo HTML
+    を組み合わせて、MA計算に使える DataFrame を返す
+    """
+    base_df = fetch_google(code)
+    rt_df = fetch_yahoo_realtime(code)
+
+    if base_df is None and rt_df is None:
+        return None
+
+    if base_df is None:
+        return rt_df.sort_index()
+
+    if rt_df is None:
+        return base_df.sort_index()
+
+    # index が被る場合はリアルタイムを優先
+    df = pd.concat([base_df, rt_df])
+    df = df[~df.index.duplicated(keep="last")]
+    return df.sort_index()
 
 # ==============================
 # 3. ロジック計算
@@ -146,11 +138,14 @@ def calc_logic(df):
         close = df["close"]
         ma5 = close.rolling(5).mean()
         ma25 = close.rolling(25).mean()
+
         latest = float(close.iloc[-1])
         dev = (latest - ma25.iloc[-1]) / ma25.iloc[-1] * 100
         mom = (ma5.iloc[-1] - ma25.iloc[-1]) / ma25.iloc[-1] * 100
+
         score = min(100, max(0, 60 - dev * 2) + max(0, 40 + mom * 4))
         trend = "UP" if ma5.iloc[-1] > ma25.iloc[-1] else "DOWN"
+
         return {
             "price": latest,
             "dev": dev,
@@ -158,30 +153,35 @@ def calc_logic(df):
             "score": score,
             "trend": trend,
         }
-    except:
+    except Exception as e:
+        print("calc_logic error:", e)
         return None
 
 # ==============================
-# 4. 理由付け
+# 4. 理由付け（強化版）
 # ==============================
 def build_reason(dev, score, mom):
     reasons = []
+
+    # トレンド
     if dev > 0:
-        reasons.append("短期トレンドが上向きです")
+        reasons.append("短期トレンドが上向きで、買い圧力が強まっています")
     elif dev > -2:
-        reasons.append("下落が一服し、底打ちの兆しがあります")
+        reasons.append("下落が一服し、底打ちの兆しが見られます")
     else:
-        reasons.append("トレンドは弱いですが、反発余地があります")
+        reasons.append("トレンドは弱いものの、反発余地が残っています")
 
+    # スコア
     if score >= 80:
-        reasons.append("総合スコアが高く、基礎体力が強い銘柄です")
+        reasons.append("総合スコアが非常に高く、基礎体力の強さが際立っています")
     elif score >= 60:
-        reasons.append("総合スコアが良好で安定しています")
+        reasons.append("総合スコアが良好で、安定した推移が期待できます")
     else:
-        reasons.append("スコアは中立で、様子見が必要です")
+        reasons.append("スコアは中立圏で、慎重な判断が必要です")
 
+    # モメンタム
     if mom > 0:
-        reasons.append("モメンタムが強く、上昇圧力があります")
+        reasons.append("モメンタムが強く、上昇の勢いが続いています")
     else:
         reasons.append("モメンタムは弱めですが、反転の可能性があります")
 
@@ -235,7 +235,7 @@ def main():
         })
 
     if not results:
-        send_line("全銘柄でデータ取得に失敗しました（API 障害の可能性）")
+        send_line("全銘柄でデータ取得に失敗しました（データソース障害の可能性）")
         return
 
     top7 = sorted(results, key=lambda x: x["score"], reverse=True)[:7]
@@ -243,7 +243,12 @@ def main():
     msg = "【本日の Buy Top7】\n\n"
     for r in top7:
         msg += f"■{r['name']}（{r['code']}）\n"
-        msg += f"   株価:{r['price']:.1f}円 / 乖離:{r['dev']:.1f}% / モメンタム:{r['mom']:.2f}% / スコア:{r['score']:.1f}\n"
+        msg += (
+            f"   株価:{r['price']:.1f}円 / "
+            f"乖離:{r['dev']:.1f}% / "
+            f"モメンタム:{r['mom']:.2f}% / "
+            f"スコア:{r['score']:.1f}\n"
+        )
         msg += f"{r['reason']}\n\n"
 
     send_line(msg)
