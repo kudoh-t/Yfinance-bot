@@ -3,7 +3,21 @@ import requests
 import pandas as pd
 from datetime import datetime, time
 import time as t
-from datetime import datetime
+
+
+def is_japanese_holiday():
+    """日本の祝日APIで当日が祝日か判定"""
+    try:
+        url = "https://holidays-jp.github.io/api/v1/date.json"
+        r = requests.get(url, timeout=5)
+        r.raise_for_status()
+        holidays = r.json()  # {"2026-01-01": "元日", ...}
+
+        today = datetime.now().strftime("%Y-%m-%d")
+        return today in holidays
+    except Exception as e:
+        print("祝日API取得失敗:", e)
+        return False  # API失敗時は通知を止めない
 
 def is_weekday():
     # Monday=0 ... Sunday=6
@@ -254,6 +268,10 @@ def main():
     # --- 土日は通知しない ---
     if not is_weekday():
         print("今日は土日 → 通知スキップ")
+        return
+    # --- 日本の祝日も通知しない ---
+    if is_japanese_holiday():
+        print("今日は祝日 → 通知スキップ")
         return
     wait_until_1135()
 
