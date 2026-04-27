@@ -3,7 +3,11 @@ import requests
 import pandas as pd
 from datetime import datetime, time
 import time as t
-import re
+from datetime import datetime
+
+def is_weekday():
+    # Monday=0 ... Sunday=6
+    return datetime.now().weekday() < 5
 
 # ==============================
 # 0. 11:35 まで待機（GitHub Actions ではスキップ）
@@ -247,6 +251,10 @@ def send_line(msg: str):
 # 6. メイン処理
 # ==============================
 def main():
+    # --- 土日は通知しない ---
+    if not is_weekday():
+        print("今日は土日 → 通知スキップ")
+        return
     wait_until_1135()
 
     results = []
