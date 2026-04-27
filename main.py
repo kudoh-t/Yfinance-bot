@@ -50,6 +50,8 @@ NAME_TO_CODE = {
     "クオリプス": "4894",
     "トリケミカル": "4369",
     "パワーエックス": "485A",
+     # ★ 追加
+    "iシェアーズオートメーション&ロボットETF": "2522",
 }
 
 UA = {
@@ -274,7 +276,7 @@ def main():
 
     msg = "【本日の Buy Top7】\n\n"
     for r in top7:
-        msg += f"■{r['name']}（{r['code']}）\n"
+        msg += f"■{r['code']} {r['name']}\n"
         msg += (
             f"   株価:{r['price']:.1f}円 / "
             f"乖離:{r['dev']:.1f}% / "
